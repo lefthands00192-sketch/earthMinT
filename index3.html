@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>손으로 조작하는 단열 변화 시뮬레이션</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Malgun Gothic', sans-serif; }
+        .container { position: relative; width: 100vw; height: 100vh; }
+        video { display: none; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        
+        .info-panel {
+            position: absolute; top: 20px; left: 20px;
+            background: rgba(255, 255, 255, 0.9); padding: 20px;
+            border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            font-size: 18px; z-index: 10; width: 280px;
+        }
+        .info-panel h2 { margin-top: 0; font-size: 22px; color: #333; }
+        .value { font-weight: bold; color: #0066cc; }
+        
+        .control-panel {
+            position: absolute; top: 20px; right: 20px;
+            background: rgba(255, 255, 255, 0.9); padding: 20px;
+            border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            font-size: 16px; z-index: 10; width: 250px;
+        }
+        .control-panel h3 { margin-top: 0; font-size: 20px; color: #333; }
+        .control-group { margin-bottom: 15px; }
+        .control-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        
+        .instruction {
+            position: absolute; bottom: 30px; width: 100%;
+            text-align: center; color: white; font-size: 24px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8); z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        
+        <div class="info-panel">
+            <h2>공기 덩어리 상태</h2>
+            <p>고도: <span id="alt-val" class="value">0</span> m</p>
+            <p>기온: <span id="temp-val" class="value">0.0</span> °C</p>
+            <p>이슬점: <span id="dew-val" class="value">0.0</span> °C</p>
+            <p>상대습도: <span id="rh-val" class="value">0</span> %</p>
+            <p>상태: <span id="state-val" class="value" style="color: #ff6600;">-</span></p>
+        </div>
+
+        <div class="control-panel">
+            <h3>지표면 조건 설정</h3>
+            <div class="control-group">
+                <label>초기 기온: <span id="input-temp-val" class="value">25</span> °C</label>
+                <input type="range" id="input-temp" min="-10" max="40" step="1" value="25">
+            </div>
+            <div class="control-group">
+                <label>초기 상대습도: <span id="input-rh-val" class="value">50</span> %</label>
+                <input type="range" id="input-rh" min="10" max="100" step="1" value="50">
+            </div>
+            <p style="font-size: 14px; color: #555; margin-bottom:0;">* 습도가 높을수록 이슬점이 높아져 구름이 낮은 고도에서 생성됩니다.</p>
+        </div>
+        
+        <div class="instruction">화면 중간쯤에서 손을 조금만 움직여도 고도가 끝까지 조절됩니다.</div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        const altVal = document.getElementById('alt-val');
+        const tempVal = document.getElementById('temp-val');
+        const dewVal = document.getElementById('dew-val');
+        const rhVal = document.getElementById('rh-val');
+        const stateVal = document.getElementById('state-val');
+
+        const inputTemp = document.getElementById('input-temp');
+        const inputRh = document.getElementById('input-rh');
+        const inputTempVal = document.getElementById('input-temp-val');
+        const inputRhVal = document.getElementById('input-rh-val');
+
+        const maxAltitude = 3000;
+        const surfaceHeightPx = 50; // 지표면 두께
+
+        function calculateDewPoint(temp, rh) {
+            return temp - (100 - rh) / 5;
+        }
+
+        function onResults(results) {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            canvasCtx.globalAlpha = 0.3;
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.globalAlpha = 1.0;
+
+            canvasCtx.fillStyle = '#228B22';
+            canvasCtx.fillRect(0, canvasElement.height - surfaceHeightPx, canvasElement.width, surfaceHeightPx);
+
+            const surfaceTemp = parseFloat(inputTemp.value);
+            const surfaceRh = parseFloat(inputRh.value);
+            inputTempVal.innerText = surfaceTemp;
+            inputRhVal.innerText = surfaceRh;
+
+            const surfaceDew = calculateDewPoint(surfaceTemp, surfaceRh);
+            let LCL = 125 * (surfaceTemp - surfaceDew);
+            if (LCL < 0) LCL = 0;
+
+            const drawableHeight = canvasElement.height - surfaceHeightPx; // 공기 덩어리가 움직일 수 있는 화면 높이
+
+            if (LCL <= maxAltitude) {
+                const lclY = drawableHeight - (LCL / maxAltitude) * drawableHeight;
+                canvasCtx.beginPath();
+                canvasCtx.setLineDash([5, 15]);
+                canvasCtx.moveTo(0, lclY);
+                canvasCtx.lineTo(canvasElement.width, lclY);
+                canvasCtx.strokeStyle = 'white';
+                canvasCtx.lineWidth = 2;
+                canvasCtx.stroke();
+                canvasCtx.setLineDash([]);
+                canvasCtx.fillStyle = 'white';
+                canvasCtx.font = '16px Malgun Gothic';
+                canvasCtx.fillText(`상승 응결 고도 (${Math.round(LCL)}m)`, 20, lclY - 10);
+            }
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                const palmY = hand[9].y; 
+                
+                // [화각 문제 해결 부분] 손 인식 범위 보정
+                // 카메라의 20% ~ 80% 구간만 사용하도록 맵핑 (필요에 따라 이 값을 조정하세요)
+                const P_MIN = 0.2; 
+                const P_MAX = 0.8;
+                
+                let mappedY = (palmY - P_MIN) / (P_MAX - P_MIN);
+                // 화면 밖으로 넘어가지 않도록 0 ~ 1 사이로 제한(Clamp)
+                mappedY = Math.max(0, Math.min(1, mappedY));
+
+                let altitude = (1 - mappedY) * maxAltitude;
+
+                let currentTemp, currentDew, state, humidity;
+                
+                if (altitude <= LCL) {
+                    currentTemp = surfaceTemp - (altitude / 1000) * 10;
+                    currentDew = surfaceDew - (altitude / 1000) * 2;
+                    state = "불포화 (단열 팽창)";
+                    stateVal.style.color = "#ff6600";
+                    humidity = Math.max(0, Math.min(100, Math.round(100 - 5 * (currentTemp - currentDew))));
+                } else {
+                    const tempAtLCL = surfaceTemp - (LCL / 1000) * 10;
+                    currentTemp = tempAtLCL - ((altitude - LCL) / 1000) * 5;
+                    currentDew = currentTemp; 
+                    state = "포화 (구름 생성)";
+                    stateVal.style.color = "#0066cc";
+                    humidity = 100;
+                }
+
+                altVal.innerText = Math.round(altitude);
+                tempVal.innerText = currentTemp.toFixed(1);
+                dewVal.innerText = currentDew.toFixed(1);
+                rhVal.innerText = humidity;
+                stateVal.innerText = state;
+
+                // 공기 덩어리의 화면상 y좌표도 보정된 mappedY를 사용하여 화면 끝까지 이동하게 함
+                const baseX = canvasElement.width / 2;
+                const baseY = mappedY * drawableHeight; 
+                const baseRadius = 40 + (altitude / maxAltitude) * 60;
+
+                canvasCtx.beginPath();
+                canvasCtx.arc(baseX, baseY, baseRadius, 0, 2 * Math.PI);
+                
+                if (altitude >= LCL) {
+                    canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                    canvasCtx.shadowColor = 'white';
+                    canvasCtx.shadowBlur = 20;
+                } else {
+                    canvasCtx.fillStyle = 'rgba(135, 206, 235, 0.6)';
+                    canvasCtx.strokeStyle = '#000';
+                    canvasCtx.lineWidth = 2;
+                    canvasCtx.stroke();
+                    canvasCtx.shadowBlur = 0;
+                }
+                canvasCtx.fill();
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
